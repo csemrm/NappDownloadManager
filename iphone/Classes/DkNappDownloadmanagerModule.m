@@ -42,6 +42,8 @@
 
 -(void)startup
 {
+    // Nuke everything..
+    [self cleanUpAtLaunch];
     
     downloader = [[Downloader alloc] init];
     [downloader setDelegate:self];
@@ -112,6 +114,95 @@ MAKE_SYSTEM_PROP(NETWORK_TYPE_ANY, 2)
 MAKE_SYSTEM_PROP_DBL(DOWNLOAD_PRIORITY_LOW, 0.1)
 MAKE_SYSTEM_PROP_DBL(DOWNLOAD_PRIORITY_NORMAL, 0.2)
 MAKE_SYSTEM_PROP_DBL(DOWNLOAD_PRIORITY_HIGH, 0.3)
+
+-(void)cleanUpAtLaunch
+{
+    NSLog(@"[INFO] nukeEverything nukeEverything nukeEverything nukeEverything nukeEverything");
+    
+    // Called in the startup method (above) before initialising the downloader.
+    
+    // We want to clean up any partially dowloaded files which might be referenced from the
+    // DownloadQueue.dat file. When developing an app, the stored UID will always change.
+    // I believe this may be causing the segmentation faults and crashes which can occur when trying to clean up after a crash during a download.
+    
+    // So, we're going to look up the files in the queue [DownloadQueue.dat] at app launch and loop through the stored requests looking for the DownloadStatusInProgress [1] status.
+    
+    // Since the application UID may have changed we'll need to rebuild the path when trying to delete the old file.
+    // We're just going to support the Documents folder for now, since the tempDirectory, cacheDataDirectory and applicationSupportDirectory are writable too.
+    // For further development and coverage, splitting the filePath by a UUID regex might be an idea. Bearing in mind the tempDirectory has a different root path than the others. eg:
+    // All others     : /var/mobile/Containers/Data/Application/:UUID...
+    // Temp Directory : /private/var/mobile/Containers/Data/Application/:UUID...
+    // Handy UUID regex:
+    // NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" options:NSRegularExpressionCaseInsensitive error:nil];
+    
+    // After all this, we delete the old DownloadQueue.dat and DownloadItemCatalog.dat files then initialise the downloader as normal.
+    // Here goes ...
+    
+    NSArray* paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString* documentsDirectory = [paths objectAtIndex:0];
+    
+    NSString* filePath = [documentsDirectory stringByAppendingPathComponent:@"/DownloadQueue.dat"];
+    NSString* filePathCat = [documentsDirectory stringByAppendingPathComponent:@"/DownloadItemCatalog.dat"];
+    
+    if ([[NSFileManager defaultManager] fileExistsAtPath:filePath] == YES)
+    {
+        NSLog(@"[INFO] loading existing DownloadQueue.dat ");
+        NSData *fileData = [[NSData alloc] initWithContentsOfFile:filePath];
+        NSKeyedUnarchiver *decoder = [[NSKeyedUnarchiver alloc] initForReadingWithData:fileData];
+        NSMutableArray *downloadInformation = [decoder decodeObjectForKey:@"downloadInformation"];
+        for (DownloadRequest* request in downloadInformation) {
+            // NSLog(@"[INFO] STATUS  %d", request.status); // See DownloadStatus.h
+            
+            if(request.status == 1 || request.status == 0){
+                // Request was in progress. Or possibly set up but not registered in the queue data as started.
+                // Some zero byte files can be left behind in this case.
+                
+                // NSLog(@"[INFO] STORED filePath with download status: %d : %@", request.status, request.filePath);
+                // Fix the location for a potentially new build.
+                NSArray *storedAppRootPath = [request.filePath componentsSeparatedByString: @"/Documents"];
+                NSString *storedFilePath = storedAppRootPath[1];
+                NSString *actualPath = [documentsDirectory stringByAppendingString:storedFilePath];
+                storedAppRootPath = nil;
+                storedFilePath = nil;
+                if([[NSFileManager defaultManager] fileExistsAtPath:actualPath] == YES){
+                    NSLog(@"[INFO] DELETE leftover file at:  %@", actualPath);
+                    NSError *err = nil;
+                    [[NSFileManager defaultManager] removeItemAtPath:actualPath error:&err];
+                    if(err != nil){
+                        NSLog(@"[INFO] Unable to delete old file.\n"
+                              "Error: %@ %d %@", [err domain], [err code], [[err userInfo] description]);
+                    }
+                }
+            }
+        }
+        [decoder release];
+        [fileData release];
+        downloadInformation = nil;
+        // Delete DownloadQueue.dat
+        NSError *errc = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:filePath error:&errc];
+        if(errc!=nil){
+            NSLog(@"Unable to delete DownloadQueue.dat file.\n"
+                  "Error: %@ %d %@", [errc domain], [errc code], [[errc userInfo] description]);
+        } else {
+            NSLog(@"[INFO] DELETED OLD DownloadQueue.dat ");
+        }
+    }
+    
+    if([[NSFileManager defaultManager] fileExistsAtPath:filePathCat] == YES){
+        NSLog(@"[INFO] loading existing DownloadItemCatalog.dat ");
+        // Delete the catalog
+        NSError *errcc = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:filePathCat error:&errcc];
+        if(errcc!=nil){
+            NSLog(@"Unable to delete DownloadItemCatalog.dat file.\n"
+                  "Error: %@ %d %@", [errcc domain], [errcc code], [[errcc userInfo] description]);
+        } else {
+            NSLog(@"[INFO] DELETED OLD DownloadItemCatalog.dat ");
+        }
+    }
+    // All done.
+}
 
 -(void)setMaximumSimultaneousDownloads:(id)value
 {
